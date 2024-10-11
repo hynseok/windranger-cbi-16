@@ -2,11 +2,15 @@
 	instrument the critical bb
 */
 
-#include "SVF-FE/LLVMUtil.h"
+#include "SVF-LLVM/LLVMUtil.h"
+#include "SVF-LLVM/LLVMModule.h"
+#include "SVF-LLVM/ICFGBuilder.h"
 #include "Graphs/SVFG.h"
+#include "Graphs/ICFGNode.h"
+#include "Graphs/ICFG.h"
 #include "WPA/Andersen.h"
 #include "SABER/LeakChecker.h"
-#include "SVF-FE/PAGBuilder.h"
+#include "SVFIR/SVFIR.h"
 #include "llvm/IR/CFG.h"
 #include <fstream>
 #include <sstream>
@@ -49,7 +53,7 @@ uint32_t cond_instrument_num = 0;
 std::string getDebugInfo(BasicBlock* bb) {
 	for (BasicBlock::iterator it = bb->begin(), eit = bb->end(); it != eit; ++it) {
 		Instruction* inst = &(*it);
-		std::string str=SVFUtil::getSourceLoc(inst);
+		std::string str=LLVMUtil::getSourceLoc(inst);
 		if (str != "{  }" && str.find("ln: 0  cl: 0") == str.npos)
 			return str;
 	}
@@ -57,21 +61,21 @@ std::string getDebugInfo(BasicBlock* bb) {
 }
 
 void countCGDistance(std::vector<NodeID> ids) {
-	FIFOWorkList<const FunEntryBlockNode*> worklist;
+	FIFOWorkList<const FunEntryICFGNode*> worklist;
 
 	// calculate the function distance to each target.
 	for (NodeID id : ids) {
-		std::set<const FunEntryBlockNode*> visited;
+		std::set<const FunEntryICFGNode*> visited;
 
 		ICFGNode* iNode = icfg->getICFGNode(id);
-		FunEntryBlockNode* fNode = icfg->getFunEntryBlockNode(iNode->getFun());
+		FunEntryICFGNode* fNode = icfg->getFunEntryBlock(iNode->getFun());
 		worklist.push(fNode);
 
 		std::map<const SVFFunction*,uint32_t> df;
 		df[iNode->getFun()] = 1;
 
 		while (!worklist.empty()) {
-			const FunEntryBlockNode* vNode = worklist.pop();
+			const FunEntryICFGNode* vNode = worklist.pop();
 
 			for (ICFGNode::const_iterator it = vNode->InEdgeBegin(), eit =
 					vNode->InEdgeEnd(); it != eit; ++it) {
@@ -79,7 +83,7 @@ void countCGDistance(std::vector<NodeID> ids) {
 				ICFGEdge* edge = *it;
 				ICFGNode* srcNode = edge->getSrcNode();
 				const SVFFunction* svffunc = srcNode->getFun();
-				FunEntryBlockNode* vfNode = icfg->getFunEntryBlockNode(svffunc);
+				FunEntryICFGNode* vfNode = icfg->getFunEntryBlock(svffunc);
 
 				if ((df.count(svffunc) == 0) || (df[svffunc] > (df[vNode->getFun()] + 1))) {
 					df[svffunc] = df[vNode->getFun()] + 1;
@@ -126,7 +130,7 @@ bool isCircleEdge(llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>* loop_info, B
 void countCFGDistance(const SVFFunction* svffun) {
 	std::map<BasicBlock*,std::map<BasicBlock*,uint32_t>> dtb;
 	std::set<BasicBlock*> target_bbs;
-	for (Function::iterator bit = svffun->getLLVMFun()->begin(), ebit = svffun->getLLVMFun()->end(); bit != ebit; ++bit) {
+	for (Function::iterator bit = svffun->getLLVMFunction()->begin(), ebit = svffun->getLLVMFunction()->end(); bit != ebit; ++bit) {
 		BasicBlock* bb = &*(bit);
 		for (BasicBlock::iterator it = bb->begin(), eit = bb->end(); it != eit; ++it) {
 			Instruction* inst = &(*it);
@@ -429,7 +433,7 @@ void instrument() {
 			}
 		}
 		if (flag) {
-			outfile2 << func_id << " " << SVFUtil::getSourceLocOfFunction(svffun->getLLVMFun()) << std::endl;
+			outfile2 << func_id << " " << LLVMUtil::getSourceLocOfFunction(svffun->getLLVMFun()) << std::endl;
 			func_id++;
 		}
 	}
@@ -673,7 +677,7 @@ std::vector<NodeID> loadTargets(std::string filename) {
 			for (BasicBlock::iterator it = bb->begin(), eit = bb->end(); it != eit; ++it) {
 				uint32_t line_num = 0;
 				Instruction* inst = &(*it);
-				std::string str=SVFUtil::getSourceLoc(inst);
+				std::string str=LLVMUtil::getSourceLoc(inst);
 				//if (str != "{  }" && str.find("ln: 0  cl: 0") == str.npos) {
 
 					if (SVFUtil::isa<AllocaInst>(inst)) {
@@ -710,15 +714,15 @@ int main(int argc, char ** argv) {
     int arg_num = 0;
     char **arg_value = new char*[argc];
     std::vector<std::string> moduleNameVec;
-    SVFUtil::processArguments(argc, argv, arg_num, arg_value, moduleNameVec);
+    LLVMUtil::processArguments(argc, argv, arg_num, arg_value, moduleNameVec);
     cl::ParseCommandLineOptions(arg_num, arg_value,
                                 "analyze the vinilla distance of bb\n");
 
 	svfModule = LLVMModuleSet::getLLVMModuleSet()->buildSVFModule(moduleNameVec);
 
 	icfg = new ICFG();
-	ICFGBuilder builder(icfg);
-	builder.build(svfModule);
+	ICFGBuilder* builder = new ICFGBuilder();
+	builder->build();
 
 	M = LLVMModuleSet::getLLVMModuleSet()->getMainLLVMModule();
 	C = &(LLVMModuleSet::getLLVMModuleSet()->getContext());
